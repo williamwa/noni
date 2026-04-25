@@ -70,7 +70,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		sessions: make(map[string]*Session),
 		entropy:  rand.Reader,
-		det:      detector.Stub{},
+		det:      detector.Default(),
 		stopCh:   make(chan struct{}),
 	}
 	go m.gcLoop()
