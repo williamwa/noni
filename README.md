@@ -99,6 +99,7 @@ noni status <id>
 | `noni list` | List active sessions |
 | `noni kill <id> [--signal SIG]` | TERM / KILL / INT / HUP |
 | `noni ping` | Daemon liveness |
+| `noni doctor` | Diagnose daemon, socket, and PTY support |
 | `noni version` | Version |
 
 All commands emit JSON to stdout. Non-zero exit codes: `1` user error, `2` daemon/PTY error, `3` timeout.

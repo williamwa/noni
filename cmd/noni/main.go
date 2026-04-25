@@ -25,10 +25,45 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), inputCmd(), keyCmd(), secretCmd(), readCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), versionCmd())
+	root.AddCommand(runCmd(), inputCmd(), keyCmd(), secretCmd(), readCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), doctorCmd(), versionCmd())
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, friendly(err))
 		os.Exit(exitCodeFor(err))
+	}
+}
+
+// friendly turns an RPCError code into one-line human guidance.
+// Non-RPC errors fall through unchanged.
+func friendly(err error) string {
+	var rpcErr *proto.RPCError
+	if !errors.As(err, &rpcErr) {
+		return "error: " + err.Error()
+	}
+	switch rpcErr.Code {
+	case proto.EDaemonDown:
+		return "noni: cannot reach the daemon (" + rpcErr.Message + ").\n" +
+			"  → make sure `nonid` is in PATH or next to `noni`, then retry."
+	case proto.ENotFound:
+		return "noni: " + rpcErr.Message + "\n" +
+			"  → run `noni list` to see active sessions."
+	case proto.ENotWaiting:
+		return "noni: session is not waiting for input (" + rpcErr.Message + ").\n" +
+			"  → use `noni status <id>` to inspect; only `running`/`waiting_input` accept input."
+	case proto.EAlreadyExited:
+		return "noni: session has already exited.\n" +
+			"  → use `noni status <id>` for exit_code; the session id is reaped 60min after last access."
+	case proto.ETimeout:
+		return "noni: timed out waiting for the session to change state.\n" +
+			"  → increase --timeout, or use `noni read <id>` to see what it is doing."
+	case proto.EBadRequest:
+		return "noni: bad request — " + rpcErr.Message
+	case proto.EPTYFailed:
+		return "noni: failed to open a PTY — " + rpcErr.Message + "\n" +
+			"  → run `noni doctor` to diagnose."
+	case proto.EPermission:
+		return "noni: permission denied — " + rpcErr.Message
+	default:
+		return "noni: " + rpcErr.Code + " — " + rpcErr.Message
 	}
 }
 
