@@ -25,7 +25,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), inputCmd(), readCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), versionCmd())
+	root.AddCommand(runCmd(), inputCmd(), keyCmd(), secretCmd(), readCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), versionCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(exitCodeFor(err))
@@ -172,6 +172,60 @@ func inputCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&noNewline, "no-newline", false, "do not append newline")
+	return c
+}
+
+func keyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "key <id> <key>...",
+		Short: "Send named keys (enter, up, ctrl-c, tab, ...) to a session",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cli, err := dial()
+			if err != nil {
+				return err
+			}
+			defer cli.Close()
+			var snap proto.Snapshot
+			if err := cli.Call("Key", proto.KeyReq{
+				SessionID: args[0], Keys: args[1:],
+			}, &snap); err != nil {
+				return err
+			}
+			emit(snap)
+			return nil
+		},
+	}
+}
+
+func secretCmd() *cobra.Command {
+	var envVar string
+	var noNewline bool
+	c := &cobra.Command{
+		Use:   "secret <id> --env VAR",
+		Short: "Send a secret read from the daemon's environment (no echo to logs)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if envVar == "" {
+				return fmt.Errorf("--env is required")
+			}
+			cli, err := dial()
+			if err != nil {
+				return err
+			}
+			defer cli.Close()
+			var snap proto.Snapshot
+			if err := cli.Call("Secret", proto.SecretReq{
+				SessionID: args[0], EnvVar: envVar, Newline: !noNewline,
+			}, &snap); err != nil {
+				return err
+			}
+			emit(snap)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&envVar, "env", "", "name of env var (read from daemon process env)")
 	c.Flags().BoolVar(&noNewline, "no-newline", false, "do not append newline")
 	return c
 }

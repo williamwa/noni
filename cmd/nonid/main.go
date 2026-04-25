@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -25,7 +23,6 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		log.Fatalf("mkdir socket dir: %v", err)
 	}
-	// Stale socket cleanup: only remove if no daemon is listening.
 	if _, err := os.Stat(socketPath); err == nil {
 		if c, dErr := net.Dial("unix", socketPath); dErr == nil {
 			c.Close()
@@ -77,8 +74,6 @@ func homeDir() string {
 	return os.Getenv("HOME")
 }
 
-// SocketPath resolves the daemon socket: $NONI_SOCKET, then
-// $XDG_RUNTIME_DIR/noni/sock, then ~/.noni/sock.
 func SocketPath() string {
 	if p := os.Getenv("NONI_SOCKET"); p != "" {
 		return p
@@ -111,12 +106,7 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if req.WaitMs > 0 {
-			waitForStable(s, time.Duration(req.WaitMs)*time.Millisecond)
-		} else {
-			// Default short settle: 200ms or until exit.
-			waitForStable(s, 200*time.Millisecond)
-		}
+		settle(s, req.WaitMs, 500)
 		return s.Snapshot(0), nil
 
 	case "Status":
@@ -139,10 +129,64 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if !canAcceptInput(s) {
+			return nil, proto.NewError(proto.ENotWaiting, "session not waiting for input")
+		}
 		if err := s.WriteInput(req.Text, req.Newline); err != nil {
 			return nil, err
 		}
-		waitForStable(s, 200*time.Millisecond)
+		settle(s, 0, 300)
+		return s.Snapshot(0), nil
+
+	case "Key":
+		var req proto.KeyReq
+		if err := unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		s, err := h.mgr.Get(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !canAcceptInput(s) {
+			return nil, proto.NewError(proto.ENotWaiting, "session not waiting for input")
+		}
+		var data []byte
+		for _, k := range req.Keys {
+			b := session.KeyBytes(k)
+			if b == nil {
+				return nil, proto.NewError(proto.EBadRequest, "unknown key: "+k)
+			}
+			data = append(data, b...)
+		}
+		if err := s.WriteRaw(data); err != nil {
+			return nil, err
+		}
+		settle(s, 0, 300)
+		return s.Snapshot(0), nil
+
+	case "Secret":
+		var req proto.SecretReq
+		if err := unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		if req.EnvVar == "" {
+			return nil, proto.NewError(proto.EBadRequest, "env_var required")
+		}
+		secret, ok := os.LookupEnv(req.EnvVar)
+		if !ok {
+			return nil, proto.NewError(proto.EBadRequest, "env var not set in daemon: "+req.EnvVar)
+		}
+		s, err := h.mgr.Get(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !canAcceptInput(s) {
+			return nil, proto.NewError(proto.ENotWaiting, "session not waiting for input")
+		}
+		if err := s.WriteInput(secret, req.Newline); err != nil {
+			return nil, err
+		}
+		settle(s, 0, 300)
 		return s.Snapshot(0), nil
 
 	case "Read":
@@ -178,10 +222,9 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 		if until == "" {
 			until = "state_change"
 		}
-		startStatus := s.Status()
 		deadline := time.Now().Add(timeout)
-		t := time.NewTicker(50 * time.Millisecond)
-		defer t.Stop()
+		startVer := s.Version()
+		startStatus := s.Status()
 		for {
 			st := s.Status()
 			done := false
@@ -193,15 +236,17 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 			case "prompt":
 				done = st == proto.StatusWaitingInput || st == proto.StatusExited
 			case "idle":
-				done = true // M1 placeholder; real idle wait in M2
+				done = st == proto.StatusWaitingInput || st == proto.StatusExited
+			default:
+				return nil, proto.NewError(proto.EBadRequest, "unknown until: "+until)
 			}
 			if done {
 				return s.Snapshot(0), nil
 			}
-			if time.Now().After(deadline) {
+			if !s.WaitChange(startVer, deadline) {
 				return nil, proto.NewError(proto.ETimeout, "wait timed out")
 			}
-			<-t.C
+			startVer = s.Version()
 		}
 
 	case "List":
@@ -243,6 +288,32 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 	}
 }
 
+func canAcceptInput(s *session.Session) bool {
+	st := s.Status()
+	return st == proto.StatusRunning || st == proto.StatusWaitingInput || st == proto.StatusStalled
+}
+
+// settle waits for either an exit or a state change to waiting_input
+// after a Run/Input/Key/Secret call. waitMs<=0 uses the default.
+func settle(s *session.Session, waitMs, defaultMs int) {
+	d := time.Duration(waitMs) * time.Millisecond
+	if waitMs <= 0 {
+		d = time.Duration(defaultMs) * time.Millisecond
+	}
+	deadline := time.Now().Add(d)
+	startVer := s.Version()
+	for {
+		st := s.Status()
+		if st == proto.StatusExited || st == proto.StatusWaitingInput {
+			return
+		}
+		if !s.WaitChange(startVer, deadline) {
+			return
+		}
+		startVer = s.Version()
+	}
+}
+
 func unmarshal(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {
 		return nil
@@ -252,18 +323,3 @@ func unmarshal(raw json.RawMessage, v any) error {
 	}
 	return nil
 }
-
-// waitForStable waits up to d for the session to settle (proxy: short
-// idle + still running) or to exit. M1 placeholder; real detector in M2.
-func waitForStable(s *session.Session, d time.Duration) {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if s.Status() == proto.StatusExited {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-var _ = errors.New
-var _ = fmt.Sprintf

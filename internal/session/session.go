@@ -1,8 +1,4 @@
 // Package session manages PTY-backed child processes.
-//
-// M1 scope: PTY lifecycle, ring buffer of raw bytes, simplistic screen
-// rendering (line splitting), and a tick loop that flips status to exited
-// on child reap. Real prompt detection lands in M3.
 package session
 
 import (
@@ -21,6 +17,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/williamwang/noni/internal/detector"
 	"github.com/williamwang/noni/internal/proto"
 )
 
@@ -29,6 +26,10 @@ const (
 	defaultRows    = 40
 	ringBufferSize = 256 * 1024
 	screenMaxLines = 50
+
+	idleThreshold        = 300 * time.Millisecond
+	idleThresholdUnknown = 1000 * time.Millisecond
+	idleTick             = 100 * time.Millisecond
 )
 
 type Session struct {
@@ -38,7 +39,9 @@ type Session struct {
 	StartedAt time.Time
 
 	mu           sync.Mutex
+	cond         *sync.Cond
 	status       proto.Status
+	version      uint64 // bumped on any state-relevant change; for Wait
 	exitCode     *int
 	signal       string
 	lastOutputAt time.Time
@@ -46,17 +49,20 @@ type Session struct {
 	lastAccessAt time.Time
 	prompt       *proto.Prompt
 
-	cmd  *exec.Cmd
-	ptmx *os.File
-	ring *ringBuffer
+	cmd      *exec.Cmd
+	ptmx     *os.File
+	ring     *ringBuffer
+	detector detector.Detector
 
 	doneCh chan struct{} // closed when reaped
+	stopCh chan struct{} // signals ticker to exit
 }
 
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	entropy  io.Reader
+	det      detector.Detector
 	stopCh   chan struct{}
 }
 
@@ -64,6 +70,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		sessions: make(map[string]*Session),
 		entropy:  rand.Reader,
+		det:      detector.Stub{},
 		stopCh:   make(chan struct{}),
 	}
 	go m.gcLoop()
@@ -83,7 +90,6 @@ func (m *Manager) newID() string {
 	return ulid.MustNew(ulid.Timestamp(time.Now()), m.entropy).String()
 }
 
-// Run forks a child wrapped in a PTY.
 func (m *Manager) Run(req proto.RunReq) (*Session, error) {
 	if req.Cmd == "" {
 		return nil, proto.NewError(proto.EBadRequest, "cmd is required")
@@ -123,8 +129,11 @@ func (m *Manager) Run(req proto.RunReq) (*Session, error) {
 		cmd:          c,
 		ptmx:         ptmx,
 		ring:         newRingBuffer(ringBufferSize),
+		detector:     m.det,
 		doneCh:       make(chan struct{}),
+		stopCh:       make(chan struct{}),
 	}
+	s.cond = sync.NewCond(&s.mu)
 
 	m.mu.Lock()
 	m.sessions[s.ID] = s
@@ -132,6 +141,7 @@ func (m *Manager) Run(req proto.RunReq) (*Session, error) {
 
 	go s.readLoop()
 	go s.waitChild()
+	go s.tickLoop()
 
 	return s, nil
 }
@@ -176,7 +186,6 @@ func (m *Manager) Kill(id, sig string) error {
 	return s.kill(signum)
 }
 
-// gcLoop reaps exited sessions after 60 minutes of inactivity.
 func (m *Manager) gcLoop() {
 	t := time.NewTicker(1 * time.Minute)
 	defer t.Stop()
@@ -213,6 +222,7 @@ func (s *Session) readLoop() {
 				s.status = proto.StatusRunning
 				s.prompt = nil
 			}
+			s.bumpLocked()
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -224,7 +234,6 @@ func (s *Session) readLoop() {
 func (s *Session) waitChild() {
 	err := s.cmd.Wait()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.status = proto.StatusExited
 	s.prompt = nil
 	if err == nil {
@@ -250,7 +259,73 @@ func (s *Session) waitChild() {
 		}
 	}
 	_ = s.ptmx.Close()
+	s.bumpLocked()
+	s.mu.Unlock()
 	close(s.doneCh)
+	close(s.stopCh)
+}
+
+// tickLoop drives stable-state detection. Every idleTick it checks
+// whether the session has been idle long enough to be flipped from
+// running to waiting_input.
+func (s *Session) tickLoop() {
+	t := time.NewTicker(idleTick)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+		}
+		s.evaluate()
+	}
+}
+
+func (s *Session) evaluate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status != proto.StatusRunning {
+		return
+	}
+	idle := time.Since(maxTime(s.lastOutputAt, s.lastInputAt))
+	if idle < idleThreshold {
+		return
+	}
+	raw := s.ring.Bytes()
+	screen, _ := renderScreen(raw, 0)
+	in := detector.Input{Screen: screen, Cursor: proto.Cursor{}, EchoOff: ptyEchoOff(s.ptmx)}
+	if s.detector != nil {
+		if p := s.detector.Detect(in); p != nil {
+			s.status = proto.StatusWaitingInput
+			s.prompt = p
+			s.bumpLocked()
+			return
+		}
+	}
+	if idle >= idleThresholdUnknown {
+		s.status = proto.StatusWaitingInput
+		s.prompt = &proto.Prompt{
+			Type:       proto.PromptUnknown,
+			Echo:       true,
+			Confidence: 0.0,
+			Question:   lastLine(screen),
+		}
+		s.bumpLocked()
+	}
+}
+
+func lastLine(lines []string) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+func (s *Session) bumpLocked() {
+	s.version++
+	s.cond.Broadcast()
 }
 
 func (s *Session) kill(sig syscall.Signal) error {
@@ -288,6 +363,28 @@ func (s *Session) WriteInput(text string, newline bool) error {
 		s.status = proto.StatusRunning
 		s.prompt = nil
 	}
+	s.bumpLocked()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Session) WriteRaw(data []byte) error {
+	s.mu.Lock()
+	st := s.status
+	s.mu.Unlock()
+	if st == proto.StatusExited {
+		return proto.NewError(proto.EAlreadyExited, "session already exited")
+	}
+	if _, err := s.ptmx.Write(data); err != nil {
+		return proto.NewError(proto.EInternal, err.Error())
+	}
+	s.mu.Lock()
+	s.lastInputAt = time.Now()
+	if s.status == proto.StatusWaitingInput {
+		s.status = proto.StatusRunning
+		s.prompt = nil
+	}
+	s.bumpLocked()
 	s.mu.Unlock()
 	return nil
 }
@@ -296,8 +393,34 @@ func (s *Session) Resize(cols, rows int) error {
 	return pty.Setsize(s.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 }
 
-// Snapshot builds a proto.Snapshot. Callers may pass tailLines>0 to
-// override the default screen window.
+// WaitChange blocks until the session's version exceeds startVer or
+// deadline passes. Returns true if a change happened.
+func (s *Session) WaitChange(startVer uint64, deadline time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.version == startVer {
+		now := time.Now()
+		if !now.Before(deadline) {
+			return false
+		}
+		// sync.Cond has no timed wait; spawn a timer goroutine to broadcast.
+		timer := time.AfterFunc(deadline.Sub(now), func() {
+			s.mu.Lock()
+			s.cond.Broadcast()
+			s.mu.Unlock()
+		})
+		s.cond.Wait()
+		timer.Stop()
+	}
+	return true
+}
+
+func (s *Session) Version() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.version
+}
+
 func (s *Session) Snapshot(tailLines int) proto.Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,7 +428,7 @@ func (s *Session) Snapshot(tailLines int) proto.Snapshot {
 
 	raw := s.ring.Bytes()
 	screen, truncated := renderScreen(raw, tailLines)
-	snap := proto.Snapshot{
+	return proto.Snapshot{
 		SessionID:       s.ID,
 		Cmd:             strings.Join(s.FullCmd, " "),
 		Status:          s.status,
@@ -318,7 +441,6 @@ func (s *Session) Snapshot(tailLines int) proto.Snapshot {
 		StartedAt:       s.StartedAt,
 		LastActivity:    maxTime(s.lastOutputAt, s.lastInputAt),
 	}
-	return snap
 }
 
 func (s *Session) RawBytes() []byte {
@@ -342,8 +464,6 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-// renderScreen does a placeholder render: strips CR, splits on LF,
-// truncates to head 10 + tail 40 if too long. Real virtual terminal is M3.
 func renderScreen(raw []byte, tailLines int) ([]string, bool) {
 	cleaned := stripANSI(raw)
 	cleaned = bytes.ReplaceAll(cleaned, []byte("\r\n"), []byte("\n"))
