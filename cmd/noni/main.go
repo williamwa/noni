@@ -25,7 +25,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(runCmd(), inputCmd(), keyCmd(), secretCmd(), readCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), doctorCmd(), versionCmd())
+	root.AddCommand(runCmd(), inputCmd(), keyCmd(), secretCmd(), readCmd(), streamCmd(), waitCmd(), statusCmd(), listCmd(), killCmd(), pingCmd(), doctorCmd(), versionCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, friendly(err))
 		os.Exit(exitCodeFor(err))

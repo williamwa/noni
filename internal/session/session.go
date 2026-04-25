@@ -54,6 +54,7 @@ type Session struct {
 	ring     *ringBuffer
 	term     *terminal.Terminal
 	detector detector.Detector
+	subs     []*subscriber
 
 	doneCh chan struct{} // closed when reaped
 	stopCh chan struct{} // signals ticker to exit
@@ -226,8 +227,15 @@ func (s *Session) readLoop() {
 				s.status = proto.StatusRunning
 				s.prompt = nil
 			}
+			subs := append([]*subscriber(nil), s.subs...)
 			s.bumpLocked()
 			s.mu.Unlock()
+			for _, sub := range subs {
+				select {
+				case sub.ch <- data:
+				default: // slow consumer — drop
+				}
+			}
 		}
 		if err != nil {
 			return
@@ -263,10 +271,50 @@ func (s *Session) waitChild() {
 		}
 	}
 	_ = s.ptmx.Close()
+	subs := s.subs
+	s.subs = nil
 	s.bumpLocked()
 	s.mu.Unlock()
+	for _, sub := range subs {
+		close(sub.ch)
+	}
 	close(s.doneCh)
 	close(s.stopCh)
+}
+
+type subscriber struct {
+	ch chan []byte
+}
+
+// Subscribe returns the bytes already received plus a channel of future
+// chunks. cancel removes the subscription. The channel is closed when
+// the session exits.
+func (s *Session) Subscribe(skipBacklog bool) (initial []byte, ch <-chan []byte, cancel func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !skipBacklog {
+		initial = s.ring.Bytes()
+	}
+	if s.status == proto.StatusExited {
+		// Closed channel so the caller's range exits immediately.
+		closed := make(chan []byte)
+		close(closed)
+		return initial, closed, func() {}
+	}
+	sub := &subscriber{ch: make(chan []byte, 64)}
+	s.subs = append(s.subs, sub)
+	cancel = func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i, x := range s.subs {
+			if x == sub {
+				s.subs = append(s.subs[:i], s.subs[i+1:]...)
+				close(sub.ch)
+				return
+			}
+		}
+	}
+	return initial, sub.ch, cancel
 }
 
 // tickLoop drives stable-state detection. Every idleTick it checks

@@ -133,6 +133,26 @@ type PingResp struct {
 	UptimeS  int64  `json:"uptime_s"`
 }
 
+type StreamReq struct {
+	SessionID   string `json:"session_id"`
+	SkipBacklog bool   `json:"skip_backlog,omitempty"`
+}
+
+// StreamFrame is one envelope in a Stream response. Kind values:
+//
+//	"initial" — backlog bytes already buffered when the stream started
+//	"chunk"   — new bytes arriving from the PTY
+//	"state"   — status changed (e.g. running → waiting_input)
+//	"end"     — terminal frame; client should stop reading
+type StreamFrame struct {
+	Kind     string  `json:"kind"`
+	Bytes    string  `json:"bytes,omitempty"` // base64-encoded raw PTY bytes
+	Status   Status  `json:"status,omitempty"`
+	Prompt   *Prompt `json:"prompt,omitempty"`
+	ExitCode *int    `json:"exit_code,omitempty"`
+	Signal   string  `json:"signal,omitempty"`
+}
+
 // --- Errors ---
 
 const (

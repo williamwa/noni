@@ -280,6 +280,17 @@ func (h *handler) Dispatch(method string, params json.RawMessage) (any, error) {
 		}
 		return s.Snapshot(0), nil
 
+	case "Stream":
+		var req proto.StreamReq
+		if err := unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		s, err := h.mgr.Get(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		return &streamHandle{s: s, skipBacklog: req.SkipBacklog}, nil
+
 	case "Ping":
 		return proto.PingResp{Version: Version, UptimeS: int64(time.Since(h.startedAt).Seconds())}, nil
 

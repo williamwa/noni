@@ -94,6 +94,7 @@ noni status <id>
 | `noni key <id> <key>...` | Send named keys: `enter`, `tab`, `up`, `down`, `ctrl-c`, `f1`, … |
 | `noni secret <id> --env VAR` | Send daemon's `$VAR` as input — never on RPC wire |
 | `noni read <id> [--tail N] [--raw]` | Read current screen |
+| `noni stream <id> [--json] [--skip-backlog]` | Tail PTY output in real time (raw bytes, or JSON frames) |
 | `noni wait <id> [--until X]` | Block until state change / exit / prompt / idle |
 | `noni status <id>` | Snapshot |
 | `noni list` | List active sessions |

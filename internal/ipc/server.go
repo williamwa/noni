@@ -16,6 +16,15 @@ import (
 // a result value (any JSON-marshalable) or a *proto.RPCError.
 type Handler func(method string, params json.RawMessage) (any, error)
 
+// Streamer is implemented by handler results that want to push multiple
+// JSON-RPC responses sharing the request id. The framework calls Stream
+// with a `send` closure; each call writes one Response frame. Stream
+// returns when streaming is complete (server may then send no more
+// frames for this request).
+type Streamer interface {
+	Stream(send func(any) error) error
+}
+
 type Server struct {
 	ln     net.Listener
 	h      Handler
@@ -71,8 +80,30 @@ func (s *Server) handleConn(conn net.Conn) {
 			_ = enc.Encode(Response{JSONRPC: Version, Error: &Error{Code: -32700, Message: "parse error"}})
 			continue
 		}
-		resp := Response{JSONRPC: Version, ID: req.ID}
 		result, err := s.h(req.Method, req.Params)
+		if err == nil {
+			if streamer, ok := result.(Streamer); ok {
+				send := func(frame any) error {
+					b, mErr := json.Marshal(frame)
+					if mErr != nil {
+						return mErr
+					}
+					return enc.Encode(Response{JSONRPC: Version, ID: req.ID, Result: b})
+				}
+				if sErr := streamer.Stream(send); sErr != nil {
+					var rpcErr *proto.RPCError
+					if errors.As(sErr, &rpcErr) {
+						_ = enc.Encode(Response{JSONRPC: Version, ID: req.ID,
+							Error: &Error{Code: -32000, Message: rpcErr.Message, Data: map[string]string{"code": rpcErr.Code}}})
+					} else {
+						_ = enc.Encode(Response{JSONRPC: Version, ID: req.ID,
+							Error: &Error{Code: -32603, Message: sErr.Error(), Data: map[string]string{"code": proto.EInternal}}})
+					}
+				}
+				continue
+			}
+		}
+		resp := Response{JSONRPC: Version, ID: req.ID}
 		if err != nil {
 			var rpcErr *proto.RPCError
 			if errors.As(err, &rpcErr) {
