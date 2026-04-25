@@ -17,8 +17,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/williamwang/noni/internal/detector"
-	"github.com/williamwang/noni/internal/proto"
+	"github.com/williamwa/noni/internal/detector"
+	"github.com/williamwa/noni/internal/proto"
 )
 
 const (

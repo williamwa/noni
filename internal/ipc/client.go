@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync/atomic"
 
-	"github.com/williamwang/noni/internal/proto"
+	"github.com/williamwa/noni/internal/proto"
 )
 
 type Client struct {

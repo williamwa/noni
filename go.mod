@@ -1,4 +1,4 @@
-module github.com/williamwang/noni
+module github.com/williamwa/noni
 
 go 1.24.2
 

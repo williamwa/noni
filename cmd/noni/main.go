@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/williamwang/noni/internal/ipc"
-	"github.com/williamwang/noni/internal/proto"
+	"github.com/williamwa/noni/internal/ipc"
+	"github.com/williamwa/noni/internal/proto"
 )
 
 const Version = "0.1.0-dev"

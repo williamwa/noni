@@ -9,7 +9,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/williamwang/noni/internal/proto"
+	"github.com/williamwa/noni/internal/proto"
 )
 
 // Handler processes a method call. Implementations should return either

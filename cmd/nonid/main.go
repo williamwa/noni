@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/williamwang/noni/internal/ipc"
-	"github.com/williamwang/noni/internal/proto"
-	"github.com/williamwang/noni/internal/session"
+	"github.com/williamwa/noni/internal/ipc"
+	"github.com/williamwa/noni/internal/proto"
+	"github.com/williamwa/noni/internal/session"
 )
 
 const Version = "0.1.0-dev"

@@ -5,7 +5,7 @@
 // with the real regex/termios stack.
 package detector
 
-import "github.com/williamwang/noni/internal/proto"
+import "github.com/williamwa/noni/internal/proto"
 
 type Input struct {
 	Screen  []string
