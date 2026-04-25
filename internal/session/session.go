@@ -2,7 +2,6 @@
 package session
 
 import (
-	"bytes"
 	"crypto/rand"
 	"errors"
 	"io"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/williamwa/noni/internal/detector"
 	"github.com/williamwa/noni/internal/proto"
+	"github.com/williamwa/noni/internal/terminal"
 )
 
 const (
@@ -52,6 +52,7 @@ type Session struct {
 	cmd      *exec.Cmd
 	ptmx     *os.File
 	ring     *ringBuffer
+	term     *terminal.Terminal
 	detector detector.Detector
 
 	doneCh chan struct{} // closed when reaped
@@ -129,6 +130,7 @@ func (m *Manager) Run(req proto.RunReq) (*Session, error) {
 		cmd:          c,
 		ptmx:         ptmx,
 		ring:         newRingBuffer(ringBufferSize),
+		term:         terminal.New(cols, rows),
 		detector:     m.det,
 		doneCh:       make(chan struct{}),
 		stopCh:       make(chan struct{}),
@@ -215,8 +217,10 @@ func (s *Session) readLoop() {
 	for {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
+			data := append([]byte(nil), buf[:n]...)
+			s.term.Feed(data)
 			s.mu.Lock()
-			s.ring.Write(buf[:n])
+			s.ring.Write(data)
 			s.lastOutputAt = time.Now()
 			if s.status == proto.StatusWaitingInput {
 				s.status = proto.StatusRunning
@@ -291,9 +295,8 @@ func (s *Session) evaluate() {
 	if idle < idleThreshold {
 		return
 	}
-	raw := s.ring.Bytes()
-	screen, _ := renderScreen(raw, 0)
-	in := detector.Input{Screen: screen, Cursor: proto.Cursor{}, EchoOff: ptyEchoOff(s.ptmx)}
+	scr := s.term.Snapshot()
+	in := detector.Input{Screen: scr.Lines, Cursor: scr.Cursor, EchoOff: ptyEchoOff(s.ptmx)}
 	if s.detector != nil {
 		if p := s.detector.Detect(in); p != nil {
 			s.status = proto.StatusWaitingInput
@@ -308,7 +311,7 @@ func (s *Session) evaluate() {
 			Type:       proto.PromptUnknown,
 			Echo:       true,
 			Confidence: 0.0,
-			Question:   lastLine(screen),
+			Question:   lastLine(scr.Lines),
 		}
 		s.bumpLocked()
 	}
@@ -390,7 +393,11 @@ func (s *Session) WriteRaw(data []byte) error {
 }
 
 func (s *Session) Resize(cols, rows int) error {
-	return pty.Setsize(s.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if err := pty.Setsize(s.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+		return err
+	}
+	s.term.Resize(cols, rows)
+	return nil
 }
 
 // WaitChange blocks until the session's version exceeds startVer or
@@ -422,19 +429,31 @@ func (s *Session) Version() uint64 {
 }
 
 func (s *Session) Snapshot(tailLines int) proto.Snapshot {
+	scr := s.term.Snapshot()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastAccessAt = time.Now()
 
-	raw := s.ring.Bytes()
-	screen, truncated := renderScreen(raw, tailLines)
+	lines := scr.Lines
+	truncated := false
+	if tailLines > 0 && len(lines) > tailLines {
+		lines = lines[len(lines)-tailLines:]
+		truncated = true
+	} else if len(lines) > screenMaxLines {
+		out := make([]string, 0, 51)
+		out = append(out, lines[:10]...)
+		out = append(out, "... ["+itoa(len(lines)-50)+" lines truncated] ...")
+		out = append(out, lines[len(lines)-40:]...)
+		lines = out
+		truncated = true
+	}
 	return proto.Snapshot{
 		SessionID:       s.ID,
 		Cmd:             strings.Join(s.FullCmd, " "),
 		Status:          s.status,
-		Screen:          screen,
+		Screen:          lines,
 		ScreenTruncated: truncated,
-		Cursor:          proto.Cursor{Row: 0, Col: 0},
+		Cursor:          scr.Cursor,
 		Prompt:          s.prompt,
 		ExitCode:        s.exitCode,
 		Signal:          s.signal,
@@ -462,24 +481,6 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-
-func renderScreen(raw []byte, tailLines int) ([]string, bool) {
-	cleaned := stripANSI(raw)
-	cleaned = bytes.ReplaceAll(cleaned, []byte("\r\n"), []byte("\n"))
-	cleaned = bytes.ReplaceAll(cleaned, []byte("\r"), []byte("\n"))
-	lines := strings.Split(strings.TrimRight(string(cleaned), "\n"), "\n")
-	if tailLines > 0 && len(lines) > tailLines {
-		return lines[len(lines)-tailLines:], true
-	}
-	if len(lines) <= screenMaxLines {
-		return lines, false
-	}
-	out := make([]string, 0, 51)
-	out = append(out, lines[:10]...)
-	out = append(out, "... ["+itoa(len(lines)-50)+" lines truncated] ...")
-	out = append(out, lines[len(lines)-40:]...)
-	return out, true
 }
 
 func itoa(n int) string {
