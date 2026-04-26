@@ -70,9 +70,8 @@ func (h *streamHandle) Stream(send func(any) error) error {
 					return err
 				}
 			}
-			if snap.Status == proto.StatusExited {
-				return flushEnd()
-			}
+			// Don't end here — wait for ch close so any final chunks
+			// (echo of last input + child's last writes) arrive first.
 		}
 	}
 }
