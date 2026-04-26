@@ -12,7 +12,10 @@ import (
 type Rules struct{}
 
 func (Rules) Detect(in Input) *proto.Prompt {
-	if in.EchoOff {
+	// ECHO off + ICANON on = password (line-buffered, hidden input).
+	// ECHO off + ICANON off = TUI in raw mode (arrow-key menus, etc.) —
+	// the termios signal is ambiguous, so fall through to screen rules.
+	if in.EchoOff && !in.CanonOff {
 		return &proto.Prompt{
 			Type:       proto.PromptPassword,
 			Echo:       false,

@@ -344,7 +344,8 @@ func (s *Session) evaluate() {
 		return
 	}
 	scr := s.term.Snapshot()
-	in := detector.Input{Screen: scr.Lines, Cursor: scr.Cursor, EchoOff: ptyEchoOff(s.ptmx)}
+	echoOff, canonOff := ptyTermios(s.ptmx)
+	in := detector.Input{Screen: scr.Lines, Cursor: scr.Cursor, EchoOff: echoOff, CanonOff: canonOff}
 	if s.detector != nil {
 		if p := s.detector.Detect(in); p != nil {
 			s.status = proto.StatusWaitingInput

@@ -8,9 +8,12 @@ import (
 	"unsafe"
 )
 
-// ptyEchoOff returns true if the slave-side termios has ECHO cleared,
-// which is the canonical signal for password prompts.
-func ptyEchoOff(ptmx *os.File) bool {
+// ptyTermios reports the slave-side ECHO and ICANON flags.
+//
+//   - ECHO off + ICANON on  → password prompt (line-buffered, hidden input)
+//   - ECHO off + ICANON off → TUI in raw / cbreak mode (arrow-key menus etc.);
+//     the screen content alone decides what kind of prompt this is.
+func ptyTermios(ptmx *os.File) (echoOff, canonOff bool) {
 	var t syscall.Termios
 	_, _, errno := syscall.Syscall6(
 		syscall.SYS_IOCTL,
@@ -20,7 +23,12 @@ func ptyEchoOff(ptmx *os.File) bool {
 		0, 0, 0,
 	)
 	if errno != 0 {
-		return false
+		return false, false
 	}
-	return t.Lflag&syscall.ECHO == 0
+	return t.Lflag&syscall.ECHO == 0, t.Lflag&syscall.ICANON == 0
+}
+
+func ptyEchoOff(ptmx *os.File) bool {
+	echo, _ := ptyTermios(ptmx)
+	return echo
 }

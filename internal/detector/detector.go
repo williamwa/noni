@@ -4,9 +4,10 @@ package detector
 import "github.com/williamwa/noni/internal/proto"
 
 type Input struct {
-	Screen  []string
-	Cursor  proto.Cursor
-	EchoOff bool
+	Screen   []string
+	Cursor   proto.Cursor
+	EchoOff  bool // termios ECHO disabled (password OR raw-mode TUI)
+	CanonOff bool // termios ICANON disabled (raw-mode TUI)
 }
 
 type Detector interface {

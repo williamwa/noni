@@ -91,12 +91,28 @@ func TestRules_Input(t *testing.T) {
 }
 
 func TestRules_Password(t *testing.T) {
+	// echo off + icanon on (line-buffered, hidden) = password
 	p := Rules{}.Detect(Input{Screen: screenOf("Password: "), EchoOff: true})
 	if p == nil || p.Type != proto.PromptPassword {
 		t.Fatalf("got %+v", p)
 	}
 	if p.Echo {
 		t.Errorf("password should be echo=false")
+	}
+}
+
+// Regression: a TUI in raw mode (echo off + canon off) must NOT be
+// classified as password. gh, fzf, etc. disable both flags to read
+// arrow keys, but they're not asking for a hidden secret.
+func TestRules_RawModeTUINotPassword(t *testing.T) {
+	screen := []string{
+		"? Where do you use GitHub?  [Use arrows to move, type to filter]",
+		"  GitHub.com",
+		"  Other",
+	}
+	p := Rules{}.Detect(Input{Screen: screen, EchoOff: true, CanonOff: true})
+	if p != nil && p.Type == proto.PromptPassword {
+		t.Fatalf("raw-mode TUI was misclassified as password: %+v", p)
 	}
 }
 
