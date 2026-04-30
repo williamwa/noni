@@ -78,7 +78,11 @@ func doctorCmd() *cobra.Command {
 }
 
 func openTestPTY() (*os.File, *exec.Cmd, error) {
-	c := exec.Command("/bin/true")
+	bin, err := exec.LookPath("true")
+	if err != nil {
+		return nil, nil, err
+	}
+	c := exec.Command(bin)
 	f, err := pty.Start(c)
 	if err != nil {
 		return nil, nil, err
