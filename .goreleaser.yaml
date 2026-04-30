@@ -1,0 +1,86 @@
+version: 2
+
+project_name: noni
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: noni
+    main: ./cmd/noni
+    binary: noni
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+  - id: nonid
+    main: ./cmd/nonid
+    binary: nonid
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+archives:
+  - id: default
+    ids: [noni, nonid]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - DESIGN.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'Merge pull request'
+
+brews:
+  - name: noni
+    repository:
+      owner: williamwa
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/williamwa/noni
+    description: "Drive interactive CLIs from anywhere — turn gh auth login, ssh-copy-id, npm publish into a sequence of stateless calls"
+    install: |
+      bin.install "noni"
+      bin.install "nonid"
+    test: |
+      system "#{bin}/noni", "version"
+
+release:
+  github:
+    owner: williamwa
+    name: noni
+  draft: false
+  prerelease: auto

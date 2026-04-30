@@ -43,16 +43,33 @@ Linux only for now. macOS works in theory (termios constants are wired) but unte
 - **`nonid`** — long-lived daemon that owns PTY-backed sessions. Auto-spawned by the CLI on first call.
 - **socket** — `$XDG_RUNTIME_DIR/noni/sock` (falls back to `~/.noni/sock`), mode 0600.
 
-## Build & install
+## Install
 
+**Homebrew (macOS / Linux):**
+```bash
+brew install williamwa/tap/noni
+```
+
+**Pre-built binary (Linux / macOS, amd64 / arm64):**
+```bash
+# pick the asset for your OS/arch from the releases page
+curl -fsSL https://github.com/williamwa/noni/releases/latest/download/noni_$(uname -s)_$(uname -m).tar.gz \
+  | tar -xz -C /usr/local/bin noni nonid
+```
+
+**`go install` (needs Go 1.22+):**
+```bash
+go install github.com/williamwa/noni/cmd/noni@latest
+go install github.com/williamwa/noni/cmd/nonid@latest
+```
+
+**From source:**
 ```bash
 git clone https://github.com/williamwa/noni
 cd noni
 make build           # produces ./bin/noni and ./bin/nonid
 make install         # copies both to ~/.local/bin/
 ```
-
-Requires Go 1.22+.
 
 ## Quick start
 
