@@ -39,6 +39,18 @@ func (t *Terminal) Resize(cols, rows int) {
 	t.vt.Resize(cols, rows)
 }
 
+// CursorAndSize returns the current 0-based cursor position and grid size
+// without rendering the full screen. Used to answer DSR queries.
+func (t *Terminal) CursorAndSize() (row, col, cols, rows int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.vt.Lock()
+	defer t.vt.Unlock()
+	c, r := t.vt.Size()
+	cur := t.vt.Cursor()
+	return cur.Y, cur.X, c, r
+}
+
 // Snapshot renders the current grid. Trailing all-blank lines are
 // trimmed so the output matches what the user "sees" rather than the
 // full grid height.

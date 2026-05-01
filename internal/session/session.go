@@ -2,8 +2,10 @@
 package session
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -55,6 +57,8 @@ type Session struct {
 	term     *terminal.Terminal
 	detector detector.Detector
 	subs     []*subscriber
+
+	dsrCarry []byte // trailing bytes of an unfinished CSI from last read
 
 	doneCh chan struct{} // closed when reaped
 	stopCh chan struct{} // signals ticker to exit
@@ -220,6 +224,7 @@ func (s *Session) readLoop() {
 		if n > 0 {
 			data := append([]byte(nil), buf[:n]...)
 			s.term.Feed(data)
+			s.replyDSR(data)
 			s.mu.Lock()
 			s.ring.Write(data)
 			s.lastOutputAt = time.Now()
@@ -240,6 +245,61 @@ func (s *Session) readLoop() {
 		if err != nil {
 			return
 		}
+	}
+}
+
+// replyDSR scans the child's output for Device Status Report queries
+// (CSI 5 n / CSI 6 n) and writes the expected reply back to the PTY.
+// Many CLIs (gh, glab, …) probe terminal size by emitting CSI 6 n and
+// blocking on stdin until the reply arrives — vt10x doesn't surface
+// these, so we answer them here. dsrCarry preserves a partial sequence
+// that straddles read boundaries.
+func (s *Session) replyDSR(data []byte) {
+	scan := data
+	if len(s.dsrCarry) > 0 {
+		scan = append(s.dsrCarry, data...)
+	}
+	i := 0
+	for i < len(scan) {
+		j := bytes.IndexByte(scan[i:], 0x1b)
+		if j < 0 {
+			i = len(scan)
+			break
+		}
+		idx := i + j
+		// Need at least ESC [ <param> n — 4 bytes.
+		if idx+3 >= len(scan) {
+			i = idx
+			break
+		}
+		if scan[idx+1] != '[' {
+			i = idx + 1
+			continue
+		}
+		// Plain DSR: ESC [ 5 n  or  ESC [ 6 n  (no '?' private marker).
+		if scan[idx+3] == 'n' {
+			switch scan[idx+2] {
+			case '6':
+				row, col, _, _ := s.term.CursorAndSize()
+				resp := fmt.Sprintf("\x1b[%d;%dR", row+1, col+1)
+				_, _ = s.ptmx.Write([]byte(resp))
+			case '5':
+				_, _ = s.ptmx.Write([]byte("\x1b[0n"))
+			}
+			i = idx + 4
+			continue
+		}
+		i = idx + 1
+	}
+	if i < len(scan) {
+		// Keep the dangling tail (at most a few bytes) for next read.
+		tail := scan[i:]
+		if len(tail) > 8 {
+			tail = tail[len(tail)-8:]
+		}
+		s.dsrCarry = append(s.dsrCarry[:0], tail...)
+	} else {
+		s.dsrCarry = s.dsrCarry[:0]
 	}
 }
 

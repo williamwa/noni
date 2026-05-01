@@ -17,7 +17,7 @@ The agent sees structured prompts and decides what to send. `noni` doesn't make 
 
 ## Status
 
-**v0.1.0-dev** — pre-release, in active development. See [PLAN.md](PLAN.md) for the milestone roadmap and [DESIGN.md](DESIGN.md) for the protocol/state-machine spec.
+**v0.1.1-dev** — pre-release, in active development. See [PLAN.md](PLAN.md) for the milestone roadmap and [DESIGN.md](DESIGN.md) for the protocol/state-machine spec.
 
 | Milestone | Status |
 |---|---|

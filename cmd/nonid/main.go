@@ -16,7 +16,7 @@ import (
 	"github.com/williamwa/noni/internal/session"
 )
 
-var Version = "0.1.0-dev"
+var Version = "0.1.1-dev"
 
 func main() {
 	socketPath := SocketPath()
